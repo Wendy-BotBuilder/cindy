@@ -37,7 +37,7 @@ import {
   MAX_OPTIONS,
   MAX_PLAN_LEN,
 } from './interactionCardModel';
-import { summarizePermissionInput } from './permissionInputSummary';
+import { renderPermissionRows, summarizePermissionInput } from './permissionInputSummary';
 import type { ControlProject, ControlSession, RecentControlSession } from './controlProjects';
 
 /** IM 卡片文本截断(实现见 interactionCardModel.truncateBlock)。 */
@@ -196,7 +196,7 @@ export function createCardBuilders(
       const whatToDo = [
         ui.cards.permission.paramsLabel,
         summary.source ? ui.cards.permission.sourceLine?.(summary.source) : '',
-        ...summary.rows,
+        ...renderPermissionRows(summary.rows),
       ]
         .filter(Boolean)
         .join('\n');

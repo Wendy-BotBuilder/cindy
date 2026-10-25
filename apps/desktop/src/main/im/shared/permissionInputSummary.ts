@@ -48,6 +48,8 @@ const KEY_LABELS: Record<string, string> = {
   per_page: '条数',
   to: '收件人',
   subject: '主题',
+  changes: '改动',
+  grantRoot: '目录',
 };
 
 /** 纯容器 key: 展开子项时只留子标签, 不写成「参数 · 会话」这种两层名。 */
@@ -70,6 +72,7 @@ const SKIP_KEYS = new Set([
 const ROW_PRIORITY = [
   'path',
   'method',
+  'changes',
   'command',
   'cmd',
   'script',
@@ -94,6 +97,17 @@ const ROW_PRIORITY = [
 export const PERMISSION_ROW_VALUE_MAX = 60;
 /** 卡片最多列几行; 多出来的在末行报数, 不静默丢。 */
 export const PERMISSION_ROW_MAX = 6;
+/** 单个数组最多展开几项(超出报数): 文件变更这类数组要能看见改哪些, 又不能挤爆卡片。 */
+export const PERMISSION_ARRAY_ITEM_MAX = 3;
+
+/**
+ * 值的 Markdown 活性字符。命中即不能当普通 Markdown 文本拼进卡面 —— 反引号、
+ * 括号、方括号、星号、感叹号等都会改变渲染结果(见 PermissionInputRow.literal)。
+ */
+const MARKDOWN_ACTIVE = /[`*_[\]()!|#>~\\]/;
+
+/** file_change 审批的 changes: `[{ path, kind: { type: 'add'|'update'|'delete', move_path? } }]`。 */
+const CHANGE_KIND_LABELS: Record<string, string> = { add: '新增', update: '修改', delete: '删除' };
 
 /** HTTP 动作 → 中文动词。 */
 const METHOD_VERBS: Record<string, string> = {
@@ -122,7 +136,22 @@ export interface PermissionInputSummary {
   /** 标题用的人话动作; 推不出来时为 null, 调用方退回工具名。 */
   action: string | null;
   /** 正文行, 形如 `路径：/open-apis/im/v1/messages`。 */
-  rows: string[];
+  rows: PermissionInputRow[];
+}
+
+export interface PermissionInputRow {
+  /** 整行文本。 */
+  text: string;
+  /**
+   * true = 值里含 Markdown 活性字符, 必须**按字面**渲染。
+   *
+   * 卡面正文是 Markdown, 而渠道会真的按语法解析: 反引号被各渠道的
+   * stripInlineCode / inline-code 处理吃掉、`![x](url)` 被图片提取器摘走、
+   * `[名](https://真实地址)` 只留下"名"。允许一张"显示内容 ≠ 实际要批的内容"
+   * 的确认卡等于让人盲签 —— 这类行由调用方用围栏代码块包住(围栏内容各渠道都
+   * 保持原样), 不做转义猜测: 转义符在不同渠道的可见性不一致, 照样会失真。
+   */
+  literal: boolean;
 }
 
 type Truncate = (s: string, max: number) => string;
@@ -168,33 +197,88 @@ function describeAction(params: Record<string, unknown>): string | null {
   return null;
 }
 
-function formatValue(value: unknown, truncate: Truncate): string | null {
+function isMarkdownActive(text: string): boolean {
+  return MARKDOWN_ACTIVE.test(text);
+}
+
+function formatValue(
+  value: unknown,
+  truncate: Truncate,
+): { text: string; literal: boolean } | null {
   if (value === null || value === undefined) return null;
-  if (Array.isArray(value)) return `[${value.length} 项]`;
   if (typeof value === 'object') return null;
-  const text = String(value).replace(/\s+/g, ' ').trim();
-  if (text === '') return null;
-  return truncate(text, PERMISSION_ROW_VALUE_MAX);
+  const raw = String(value).replace(/\s+/g, ' ').trim();
+  if (raw === '') return null;
+  return { text: truncate(raw, PERMISSION_ROW_VALUE_MAX), literal: isMarkdownActive(raw) };
+}
+
+/**
+ * 数组值展开。
+ *
+ * 只认 file_change 审批的变更列表(元素带 `path`, 见 maker-core
+ * agents/codex/index.ts 的 fileChangeApproval) —— 用户点「总是允许」前必须看见
+ * 要改哪些文件, 只报 `[N 项]` 等于把要审的对象藏起来。形状不匹配才退回条数。
+ */
+function expandArrayRows(value: unknown[], label: string): PermissionInputRow[] | null {
+  const items: string[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const record = item as Record<string, unknown>;
+    const path = typeof record.path === 'string' ? record.path.trim() : '';
+    if (path === '') return null;
+    const kind =
+      record.kind && typeof record.kind === 'object' && !Array.isArray(record.kind)
+        ? (record.kind as Record<string, unknown>)
+        : null;
+    const type = typeof kind?.type === 'string' ? kind.type : '';
+    const moveTo = typeof kind?.move_path === 'string' ? kind.move_path : '';
+    const kindLabel = CHANGE_KIND_LABELS[type] ?? type;
+    const suffix = moveTo ? `（${kindLabel} → ${moveTo}）` : kindLabel ? `（${kindLabel}）` : '';
+    items.push(`${path}${suffix}`);
+  }
+  if (items.length === 0) return null;
+  const shown = items.slice(0, PERMISSION_ARRAY_ITEM_MAX);
+  const rows: PermissionInputRow[] = shown.map((text) => ({
+    text: `${label}：${text}`,
+    literal: isMarkdownActive(text),
+  }));
+  if (items.length > shown.length) {
+    rows.push({ text: `…还有 ${items.length - shown.length} 个`, literal: false });
+  }
+  return rows;
 }
 
 /**
  * 入参 → 卡片正文行。
  *
- * 对象值只展开**一层**(再深就成 JSON 了); 标量原样; 数组只报条数。每行
- * `标签：值`, 标签取中文映射, 未知 key 用原名。
+ * 对象值只展开**一层**(再深就成 JSON 了); 标量原样; 数组按形状展开(见
+ * expandArrayRows), 认不出来只报条数。每行 `标签：值`, 标签取中文映射, 未知 key
+ * 用原名; 值里带 Markdown 活性字符的行标 literal, 由调用方按字面渲染。
  */
-function collectRows(params: Record<string, unknown>, truncate: Truncate): string[] {
-  const rows: Array<{ key: string; text: string }> = [];
+function collectRows(params: Record<string, unknown>, truncate: Truncate): PermissionInputRow[] {
+  const rows: Array<{ key: string; row: PermissionInputRow }> = [];
+  const pushRow = (key: string, row: PermissionInputRow): void => {
+    rows.push({ key, row });
+  };
   const push = (key: string, label: string, value: unknown): void => {
-    const text = formatValue(value, truncate);
-    if (text === null) return;
-    rows.push({ key, text: `${label}：${text}` });
+    const formatted = formatValue(value, truncate);
+    if (formatted === null) return;
+    pushRow(key, { text: `${label}：${formatted.text}`, literal: formatted.literal });
   };
 
   for (const [key, value] of Object.entries(params)) {
     if (SKIP_KEYS.has(key)) continue;
     const label = KEY_LABELS[key] ?? key;
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
+    if (Array.isArray(value)) {
+      const expanded = expandArrayRows(value, label);
+      if (expanded) {
+        expanded.forEach((row, index) => pushRow(`${key}.${index}`, row));
+        continue;
+      }
+      push(key, label, `[${value.length} 项]`);
+      continue;
+    }
+    if (value && typeof value === 'object') {
       for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
         if (SKIP_KEYS.has(childKey)) continue;
         const childLabel = KEY_LABELS[childKey] ?? childKey;
@@ -215,10 +299,13 @@ function collectRows(params: Record<string, unknown>, truncate: Truncate): strin
   };
 
   rows.sort((a, b) => rank(a.key) - rank(b.key));
-  if (rows.length <= PERMISSION_ROW_MAX) return rows.map((row) => row.text);
-  const kept = rows.slice(0, PERMISSION_ROW_MAX - 1).map((row) => row.text);
+  if (rows.length <= PERMISSION_ROW_MAX) return rows.map((entry) => entry.row);
+  const kept = rows.slice(0, PERMISSION_ROW_MAX - 1).map((entry) => entry.row);
   const dropped = rows.length - (PERMISSION_ROW_MAX - 1);
-  return [...kept, `…还有 ${dropped} 项参数（可在电脑上查看完整入参）`];
+  return [
+    ...kept,
+    { text: `…还有 ${dropped} 项参数（可在电脑上查看完整入参）`, literal: false },
+  ];
 }
 
 export function summarizePermissionInput(
@@ -231,4 +318,26 @@ export function summarizePermissionInput(
     action: describeAction(params),
     rows: collectRows(params, truncate),
   };
+}
+
+/** 摘要里可能出现比围栏更长的反引号串 —— 围栏必须更长, 否则会被提前闭合。 */
+function longestBacktickRun(lines: readonly string[]): number {
+  let longest = 0;
+  for (const line of lines) {
+    for (const run of line.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  }
+  return longest;
+}
+
+/**
+ * 摘要行 → 卡片正文行。
+ *
+ * 只要有一行标了 literal, 就**整块**放进围栏代码块(顺序不变): 围栏内容各渠道
+ * 都保持原样, 不必赌各家对反斜杠转义的处理是否一致。
+ */
+export function renderPermissionRows(rows: readonly PermissionInputRow[]): string[] {
+  const lines = rows.map((row) => row.text);
+  if (!rows.some((row) => row.literal)) return lines;
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(lines) + 1));
+  return [`${fence}text`, ...lines, fence];
 }

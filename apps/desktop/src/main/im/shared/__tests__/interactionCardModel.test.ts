@@ -453,6 +453,51 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
     expect(im.body).not.toContain('已截断');
   });
 
+  it('file_change 审批: 列出要改的文件与操作类型, 不只报条数', () => {
+    const im = cards.buildPermissionCard({
+      ...PERMISSION_RICH,
+      requestId: 'req-perm-changes',
+      toolName: 'file_change',
+      input: {
+        grantRoot: '/Users/wendy/proj',
+        changes: [
+          { path: 'src/a.ts', kind: { type: 'update' } },
+          { path: 'src/b.ts', kind: { type: 'add' } },
+          { path: 'src/old.ts', kind: { type: 'delete' } },
+          { path: 'src/moved.ts', kind: { type: 'update', move_path: 'src/new.ts' } },
+        ],
+      },
+    });
+    expect(im.body).toContain('src/a.ts（修改）');
+    expect(im.body).toContain('src/b.ts（新增）');
+    expect(im.body).toContain('src/old.ts（删除）');
+    // 数组只展开前几项, 其余如实报数 —— 不能静默吞掉要改的文件
+    expect(im.body).toContain('…还有 1 个');
+    expect(im.body).not.toContain('[4 项]');
+  });
+
+  it('值里有 Markdown 活性字符: 整块按字面渲染, 显示内容与实际要批的一致', () => {
+    const command = 'echo \`whoami\` && cat ![x](cindy-media://blobs/abc.png)';
+    const im = cards.buildPermissionCard({
+      ...PERMISSION_RICH,
+      requestId: 'req-perm-literal',
+      input: { command },
+    });
+    // 围栏内容各渠道都保持原样: 反引号不会被 inline-code 处理吃掉, 也不会被当图片摘走
+    expect(im.body).toContain('\`\`\`text');
+    expect(im.body).toContain(command);
+  });
+
+  it('普通值不套围栏: 保持一行一个键值行', () => {
+    const im = cards.buildPermissionCard({
+      ...PERMISSION_RICH,
+      requestId: 'req-perm-plain',
+      input: { method: 'GET', path: '/v1/messages' },
+    });
+    expect(im.body).toContain('路径：/v1/messages');
+    expect(im.body).not.toContain('\`\`\`');
+  });
+
   it('安全默认: IM cancelPending 与 hook defaultDecision 同形(只有 reason 由渠道给)', async () => {
     const reason = 'turn_closed';
     for (const req of [ASK_NO_OPTIONS, PLAN_LONG, PERMISSION_RICH]) {
