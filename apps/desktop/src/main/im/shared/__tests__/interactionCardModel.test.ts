@@ -498,6 +498,32 @@ describe('跨实现一致性 — IM cardBuilders vs hook composeInteractionCard'
     expect(im.body).not.toContain('\`\`\`');
   });
 
+
+  it('多行命令: 换行标成可见标记, 不压成一行', () => {
+    const im = cards.buildPermissionCard({
+      ...PERMISSION_RICH,
+      requestId: 'req-perm-multiline',
+      input: { command: 'echo safe\nrm -rf out' },
+    });
+    // 压成空格会把两条命令伪装成一条无害的 echo —— 卡面必须标出换行
+    expect(im.body).toContain('echo safe ⏎ rm -rf out');
+  });
+
+  it('嵌套数组/对象不静默消失: 标量数组列成员, 再深一层报字段数', () => {
+    const im = cards.buildPermissionCard({
+      ...PERMISSION_RICH,
+      requestId: 'req-perm-nested',
+      input: {
+        args: {
+          group_id: 'g1',
+          remove: ['c1', 'c2', 'c3', 'c4'],
+          options: { dryRun: true, force: false },
+        },
+      },
+    });
+    expect(im.body).toContain('移除：c1、c2、c3、…还有 1 个');
+    expect(im.body).toContain('（2 个字段）');
+  });
   it('安全默认: IM cancelPending 与 hook defaultDecision 同形(只有 reason 由渠道给)', async () => {
     const reason = 'turn_closed';
     for (const req of [ASK_NO_OPTIONS, PLAN_LONG, PERMISSION_RICH]) {

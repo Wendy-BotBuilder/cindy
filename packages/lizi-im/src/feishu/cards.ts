@@ -16,6 +16,7 @@
 
 import type { InteractiveCardSpec } from '../types.js';
 import { collectXdtImageRefs } from '../xdtRefs.js';
+import { splitByCodeFence } from '../codeFence.js';
 
 /**
  * 去掉 markdown inline code 的反引号，保留 fenced code block（```）不动。
@@ -24,14 +25,15 @@ import { collectXdtImageRefs } from '../xdtRefs.js';
 function stripInlineCode(text: string): string {
   const parts: string[] = [];
   // 按 fenced code block 切分，奇数段是代码块内容（保持原样）
-  const segments = text.split(/(```[\s\S]*?```)/g);
-  for (let i = 0; i < segments.length; i++) {
-    if (i % 2 === 1) {
-      parts.push(segments[i]);
-    } else {
-      // 非代码块区域：去掉 inline code 反引号（支持 `` `code` `` 和 ``` ``code`` ```）
-      parts.push(stripSegmentInlineCode(segments[i]));
+  // 围栏按长度识别(见 codeFence.ts): 值里带 ``` 时不能提前闭合代码块, 否则后面
+  // 的内容会被当 Markdown 解释, 卡面显示与实际内容不一致。
+  for (const segment of splitByCodeFence(text)) {
+    if (segment.kind === 'code') {
+      parts.push(segment.content);
+      continue;
     }
+    // 非代码块区域：去掉 inline code 反引号（支持 `` `code` `` 和 ``` ``code`` ```）
+    parts.push(stripSegmentInlineCode(segment.content));
   }
   return parts.join('');
 }

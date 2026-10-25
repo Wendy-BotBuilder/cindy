@@ -30,6 +30,14 @@ describe('markdownToTelegramHtml', () => {
     expect(html).toContain('<pre><code>abc</code></pre>');
   });
 
+  it('四反引号围栏: 值里的三反引号闭合不了代码块, 后续内容不被当 Markdown', () => {
+    const { html } = markdownToTelegramHtml('````text\necho ```\n**B**\n````');
+    expect(html).toContain('<pre><code class="language-text">');
+    expect(html).toContain('echo ```');
+    expect(html).toContain('**B**');
+    expect(html).not.toContain('<b>');
+  });
+
   it('http(s) 链接转 <a>, 其它 scheme 保留原文', () => {
     const { html } = markdownToTelegramHtml('[x](https://a.b/c) [y](javascript:alert(1))');
     expect(html).toContain('<a href="https://a.b/c">x</a>');

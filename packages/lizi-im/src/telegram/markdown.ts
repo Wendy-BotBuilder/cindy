@@ -9,17 +9,14 @@
  * (xdt-image:// / cindy-media://)交给上层按 sendPhoto 旁路上传。
  */
 
-interface Segment {
-  kind: 'code' | 'text';
-  content: string;
-}
+import { splitByCodeFence, type CodeFenceSegment } from '../codeFence.js';
 
 export function markdownToTelegramHtml(md: string): { html: string; imageUrls: string[] } {
   const imageUrls: string[] = [];
   const html = splitByCodeFence(md)
     .map((segment) =>
       segment.kind === 'code'
-        ? renderFence(segment.content)
+        ? renderFence(segment)
         : renderTextSegment(segment.content, imageUrls),
     )
     .join('');
@@ -51,24 +48,9 @@ export function stripTelegramHtmlTags(html: string): string {
   return out;
 }
 
-function splitByCodeFence(text: string): Segment[] {
-  const segments: Segment[] = [];
-  const re = /```[\s\S]*?(?:```|$)/g;
-  let last = 0;
-  for (const match of text.matchAll(re)) {
-    const index = match.index ?? 0;
-    if (index > last) segments.push({ kind: 'text', content: text.slice(last, index) });
-    segments.push({ kind: 'code', content: match[0] });
-    last = index + match[0].length;
-  }
-  if (last < text.length) segments.push({ kind: 'text', content: text.slice(last) });
-  return segments;
-}
-
-function renderFence(fence: string): string {
-  const m = fence.match(/^```([^`\n]*)\n?([\s\S]*?)(?:```)?$/);
-  const lang = (m?.[1] ?? '').trim();
-  const body = m?.[2] ?? '';
+function renderFence(segment: CodeFenceSegment): string {
+  const lang = (segment.info ?? '').trim();
+  const body = segment.body ?? '';
   const langAttr = /^[\w+#.-]{1,32}$/.test(lang) ? ` class="language-${lang}"` : '';
   return `<pre><code${langAttr}>${escapeHtml(body.replace(/\n$/, ''))}</code></pre>`;
   // 尾换行剥掉: <pre> 自带块级边界, 保留会多出一行空白。

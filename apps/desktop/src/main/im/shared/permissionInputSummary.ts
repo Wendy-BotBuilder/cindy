@@ -50,6 +50,8 @@ const KEY_LABELS: Record<string, string> = {
   subject: '主题',
   changes: '改动',
   grantRoot: '目录',
+  remove: '移除',
+  add: '新增',
 };
 
 /** 纯容器 key: 展开子项时只留子标签, 不写成「参数 · 会话」这种两层名。 */
@@ -201,15 +203,62 @@ function isMarkdownActive(text: string): boolean {
   return MARKDOWN_ACTIVE.test(text);
 }
 
+/**
+ * 不可见字符 → 可见字面标记。
+ *
+ * 旧写法把连续空白压成一个空格: `echo safe\nrm -rf out` 会显示成
+ * `echo safe rm -rf out` —— 两条命令被伪装成一条无害的 echo, 而这张卡正是用来
+ * 决定放行的。换行 / 制表 / 其余控制字符一律标出来, 不抹平。
+ */
+function visibleControlChars(text: string): string {
+  return text
+    .replace(/\r\n?/g, '\n')
+    .replace(/\n/g, ' ⏎ ')
+    .replace(/\t/g, ' ⇥ ')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, (ch) => {
+      const code = ch.charCodeAt(0).toString(16).padStart(2, '0');
+      return `\\x${code}`;
+    });
+}
+
+/** 标量 → 显示文本(控制字符已可见化, 多个空格合成一个)。 */
+function scalarText(value: unknown, truncate: Truncate): { text: string; literal: boolean } | null {
+  if (value === null || value === undefined) return null;
+  const raw = visibleControlChars(String(value)).replace(/ {2,}/g, ' ').trim();
+  if (raw === '') return null;
+  return { text: truncate(raw, PERMISSION_ROW_VALUE_MAX), literal: isMarkdownActive(raw) };
+}
+
+/**
+ * 数组 → 一行文本。
+ *
+ * 标量数组列出前几项(如 `remove: ['c1','c2']` —— 用户要知道移除哪些联系人),
+ * 形状不认识才退回条数。**不静默丢**: 数组值在逐层展开里也必须有可见结果。
+ */
+function arrayText(value: unknown[], truncate: Truncate): { text: string; literal: boolean } | null {
+  if (value.length === 0) return null;
+  const scalars = value.filter((item) => item === null || typeof item !== 'object');
+  if (scalars.length !== value.length) return { text: `[${value.length} 项]`, literal: false };
+  const labels = scalars.map((item) => String(item).replace(/\s+/g, ' ').trim()).filter((item) => item !== '');
+  if (labels.length === 0) return null;
+  const shown = labels.slice(0, PERMISSION_ARRAY_ITEM_MAX);
+  const suffix = labels.length > shown.length ? `、…还有 ${labels.length - shown.length} 个` : '';
+  const text = truncate(`${shown.join('、')}${suffix}`, PERMISSION_ROW_VALUE_MAX);
+  return { text, literal: isMarkdownActive(text) };
+}
+
 function formatValue(
   value: unknown,
   truncate: Truncate,
 ): { text: string; literal: boolean } | null {
   if (value === null || value === undefined) return null;
-  if (typeof value === 'object') return null;
-  const raw = String(value).replace(/\s+/g, ' ').trim();
-  if (raw === '') return null;
-  return { text: truncate(raw, PERMISSION_ROW_VALUE_MAX), literal: isMarkdownActive(raw) };
+  if (Array.isArray(value)) return arrayText(value, truncate);
+  if (typeof value === 'object') {
+    // 再深一层就不猜内容了, 但也不能让它无声消失 —— 报字段数, 用户知道还有东西。
+    const fields = Object.keys(value as Record<string, unknown>);
+    return fields.length === 0 ? null : { text: `（${fields.length} 个字段）`, literal: false };
+  }
+  return scalarText(value, truncate);
 }
 
 /**
@@ -275,7 +324,8 @@ function collectRows(params: Record<string, unknown>, truncate: Truncate): Permi
         expanded.forEach((row, index) => pushRow(`${key}.${index}`, row));
         continue;
       }
-      push(key, label, `[${value.length} 项]`);
+      // 不是变更列表: 交给 arrayText(标量数组列前几项, 其余报数)。
+      push(key, label, value);
       continue;
     }
     if (value && typeof value === 'object') {
@@ -283,6 +333,14 @@ function collectRows(params: Record<string, unknown>, truncate: Truncate): Permi
         if (SKIP_KEYS.has(childKey)) continue;
         const childLabel = KEY_LABELS[childKey] ?? childKey;
         const combined = CONTAINER_KEYS.has(key) ? childLabel : `${label} · ${childLabel}`;
+        // 嵌套数组也要有可见结果: 变更列表照旧展开, 标量数组列出成员。
+        const nestedChanges = Array.isArray(childValue)
+          ? expandArrayRows(childValue, combined)
+          : null;
+        if (nestedChanges) {
+          nestedChanges.forEach((row, index) => pushRow(`${key}.${childKey}.${index}`, row));
+          continue;
+        }
         push(`${key}.${childKey}`, combined, childValue);
       }
       continue;

@@ -1,7 +1,4 @@
-interface Segment {
-  kind: 'code' | 'text';
-  content: string;
-}
+import { splitByCodeFence } from '../codeFence.js';
 
 export function markdownToDiscord(md: string): { text: string; imageUrls: string[] } {
   const imageUrls: string[] = [];
@@ -12,22 +9,6 @@ export function markdownToDiscord(md: string): { text: string; imageUrls: string
     .join('');
 
   return { text, imageUrls };
-}
-
-function splitByCodeFence(text: string): Segment[] {
-  const segments: Segment[] = [];
-  const re = /```[\s\S]*?(?:```|$)/g;
-  let last = 0;
-
-  for (const match of text.matchAll(re)) {
-    const index = match.index ?? 0;
-    if (index > last) segments.push({ kind: 'text', content: text.slice(last, index) });
-    segments.push({ kind: 'code', content: match[0] });
-    last = index + match[0].length;
-  }
-
-  if (last < text.length) segments.push({ kind: 'text', content: text.slice(last) });
-  return segments;
 }
 
 function convertTextSegment(segment: string, imageUrls: string[]): string {

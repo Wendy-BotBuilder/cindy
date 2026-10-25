@@ -19,6 +19,13 @@ describe('markdownToDiscord', () => {
     expect(markdownToDiscord(md)).toEqual({ text: md, imageUrls: [] });
   });
 
+  it('四反引号围栏: 围栏内的图片语法不会被当受管图片摘走', () => {
+    const md = '````\n```\n![x](cindy-media://blobs/a.png)\n````';
+    const { text, imageUrls } = markdownToDiscord(md);
+    expect(imageUrls).toEqual([]);
+    expect(text).toContain('![x](cindy-media://blobs/a.png)');
+  });
+
   it('wraps markdown tables in a code fence', () => {
     const md = ['before', '', '| A | B |', '| --- | --- |', '| 1 | 2 |', '', 'after'].join('\n');
 
